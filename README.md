@@ -165,6 +165,10 @@ PYTHONPYCACHEPREFIX=/tmp/autelems-pycache python3 -m unittest discover -s microp
 Hardware acceptance still requires verifying one full-green ramp, one meter-failure
 fail-safe, max mode, charger reconnect, configuration persistence, and ESP32 reboot.
 
+## Support
+
+If you find this project useful, you can [buy me a coffee](https://buymeacoffee.com/mrmk).
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
