@@ -73,6 +73,8 @@ def snapshot_from_payload(payload, voltage):
     pv_w = float(data.get("generationPower") or 0)
     voltage = float(voltage)
     return {
+        "provider": "atmoce_web",
+        "source": "Atmoce Web",
         "grid_amps": (grid_w + storage_w) / voltage,
         "grid_raw_amps": grid_w / voltage,
         "grid_raw_power_w": grid_w,

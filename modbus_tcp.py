@@ -18,6 +18,22 @@ def _uint32_words(value):
     return ((value >> 16) & 0xFFFF, value & 0xFFFF)
 
 
+def int16(value):
+    value = int(value) & 0xFFFF
+    return value - 0x10000 if value & 0x8000 else value
+
+
+def uint32(words):
+    if len(words) < 2:
+        raise ModbusError("two registers required for uint32")
+    return ((int(words[0]) & 0xFFFF) << 16) | (int(words[1]) & 0xFFFF)
+
+
+def int32(words):
+    value = uint32(words)
+    return value - 0x100000000 if value & 0x80000000 else value
+
+
 class ModbusTcpClient:
     def __init__(self, host, port=502, unit_id=1, timeout=5):
         self.host = host
@@ -102,12 +118,20 @@ class ModbusTcpClient:
         if response != struct.pack(">HH", int(address), len(values)):
             raise ModbusError("write-registers echo mismatch")
 
-    def read_input_registers(self, address, count):
-        response = self._request(4, struct.pack(">HH", int(address), int(count)))
+    def _read_registers(self, function, address, count):
+        count = int(count)
+        response = self._request(
+            function, struct.pack(">HH", int(address), count))
         if not response or response[0] != count * 2 or len(response) != count * 2 + 1:
-            raise ModbusError("invalid input-register response")
+            raise ModbusError("invalid register response")
         return [struct.unpack(">H", response[1 + i * 2:3 + i * 2])[0]
                 for i in range(count)]
+
+    def read_holding_registers(self, address, count):
+        return self._read_registers(3, address, count)
+
+    def read_input_registers(self, address, count):
+        return self._read_registers(4, address, count)
 
     def push_limits(self, amps, offline_amps, connector_id=0):
         online_current = int(max(0, amps) * 100)

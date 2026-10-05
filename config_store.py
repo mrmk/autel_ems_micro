@@ -26,6 +26,9 @@ DEFAULTS = {
     "feedback_step_amps": 1,
     "full_green_hold_seconds": 60,
     "update_interval_s": 10,
+    "atmoce_host": "",
+    "atmoce_port": 502,
+    "atmoce_unit_id": 1,
     "atmoce_station_id": 0,
     "atmoce_token": "",
     "atmoce_username": "",
@@ -67,7 +70,8 @@ def validate(values):
                 "holding_connector_id",
                 "charger_min_amps", "charger_max_amps", "feedback_step_amps",
                 "full_green_hold_seconds", "update_interval_s",
-                "atmoce_station_id", "tou_utc_offset_minutes"):
+                "atmoce_port", "atmoce_unit_id", "atmoce_station_id",
+                "tou_utc_offset_minutes"):
         cfg[key] = int(cfg[key])
     cfg["grid_voltage_v"] = float(cfg["grid_voltage_v"])
 
@@ -89,6 +93,10 @@ def validate(values):
         raise ValueError("full_green_hold_seconds must be 0..600")
     if not 2 <= cfg["update_interval_s"] <= 300:
         raise ValueError("update_interval_s must be 2..300")
+    if not 1 <= cfg["atmoce_port"] <= 65535:
+        raise ValueError("atmoce_port must be 1..65535")
+    if not 0 <= cfg["atmoce_unit_id"] <= 247:
+        raise ValueError("atmoce_unit_id must be 0..247")
     if not 100 <= cfg["grid_voltage_v"] <= 300:
         raise ValueError("grid_voltage_v must be 100..300")
     if not -720 <= cfg["tou_utc_offset_minutes"] <= 840:
@@ -97,7 +105,7 @@ def validate(values):
         raise ValueError("setup_ap_password must contain at least 8 characters")
 
     for key in ("wifi_ssid", "wifi_password", "setup_ap_password",
-                "charger_host", "atmoce_token", "atmoce_username",
+                "charger_host", "atmoce_host", "atmoce_token", "atmoce_username",
                 "atmoce_password", "atmoce_session", "tou_night_start",
                 "tou_night_end"):
         cfg[key] = str(cfg.get(key, "")).strip()

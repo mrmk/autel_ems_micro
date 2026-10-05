@@ -2,13 +2,13 @@
 
 This is a small, independent ESP32-S3 port of the Autel EMS control path. It keeps only:
 
-- Atmoce Web station data as the meter input;
+- local Atmoce MC100/MG100 Modbus TCP metering with Atmoce Web fallback;
 - `full_green` and `max_power` charging modes;
 - time-of-use night/weekend maximum-power overrides;
 - Autel charger control and status over Modbus TCP;
 - a compact local web dashboard for configuration and status.
 
-It intentionally drops Tuya, local Atmoce Modbus, Atmoce Cloud API, green/speed
+It intentionally drops Tuya, Atmoce Cloud API, green/speed
 priority, Playwright, notifications, probes, and the Raspberry Pi buzzer.
 The port has no third-party runtime dependencies.
 
@@ -18,7 +18,8 @@ The port has no third-party runtime dependencies.
 - Current `ESP32_GENERIC_S3` MicroPython firmware with Octal-SPIRAM support (the
   code also retains compatibility with older `STA_IF`/`AP_IF` network names).
 - The charger configured as an EMS Modbus TCP server.
-- The Atmoce station ID plus an Atmoce username/password.
+- An Atmoce gateway reachable over Modbus TCP.
+- The Atmoce station ID plus a username/password for Web fallback.
 
 ## Install on ESP32-S3-N16R8
 
@@ -62,18 +63,16 @@ The port has no third-party runtime dependencies.
    larger than on ESP32-WROOM; if it is only around 100–300 KiB, recheck that
    the `SPIRAM_OCT` firmware was used.
 
-5. From the repository root, upload the application and configured settings:
+5. From this repository, upload the application and configured settings:
 
    ```sh
    mpytool -p /dev/cu.usbmodemXXXX -f -Z cp \
-     micropython/boot.py micropython/config_store.py \
-     micropython/tou_schedule.py micropython/policy.py \
-     micropython/modbus_tcp.py micropython/atmoce_web.py \
-     micropython/web_server.py micropython/main.py \
-     micropython/config.json : -- reset -- monitor
+     boot.py config_store.py tou_schedule.py policy.py \
+     modbus_tcp.py atmoce_modbus.py atmoce_web.py meter_manager.py \
+     web_server.py main.py config.json : -- reset -- monitor
    ```
 
-   Omit `micropython/config.json` if using the setup access point.
+   Omit `config.json` if using the setup access point.
 
 ## Configuration
 
@@ -92,6 +91,7 @@ The web form can change all of these settings after installation.
 | `charger_min_amps`, `charger_max_amps` | Charging-current limits |
 | `feedback_step_amps`, `full_green_hold_seconds` | Full-green feedback tuning |
 | `update_interval_s` | Control-loop period |
+| `atmoce_host`, `atmoce_port`, `atmoce_unit_id` | Primary local Atmoce Modbus endpoint; an empty host disables local reads |
 | `atmoce_station_id` | Atmoce Web station ID |
 | `atmoce_username`, `atmoce_password` | Direct API login credentials |
 | `atmoce_password_encoded` | `false` for plain password; `true` for pre-encoded API/Base64 value |
@@ -109,9 +109,10 @@ setup AP password in the same form before normal use.
 
 On normal Wi-Fi, read the assigned IP from the serial console and open it in a browser.
 The dashboard exposes `/api/status`, redacted `/api/config`, `POST /api/config`, and
-`/health`. Its charger card shows Modbus connectivity and phase, raw charger state,
-voltage, current, power, commanded limit, endpoint, unit ID, and the independent read
-and holding connector IDs.
+`/health`. The meter card shows the active source, local endpoint and Modbus phase,
+consecutive local failures, Web fallback state, voltage, grid/PV power, and battery
+SOC. The charger card shows Modbus connectivity and phase, raw charger state, voltage,
+current, power, commanded limit, endpoint, unit ID, and the independent connector IDs.
 
 ### Dashboard
 
@@ -119,15 +120,19 @@ and holding connector IDs.
 
 ## Control behavior
 
-- `full_green` uses `(gridPower + storagePower) / grid_voltage_v`, preserves the
-  battery-aware feedback step and 0–1 A import dead band, and holds the configured
-  minimum-current floor for the configured period before allowing 0 A. Both offline
-  limits are 0 A.
-- The dashboard's **Grid (raw)** metric shows `gridPower / grid_voltage_v`. This is
-  intentionally different from the adjusted grid value used internally by Full Green.
-- If Atmoce data is missing, or authentication cannot be refreshed, full-green mode
-  immediately commands 0 A. This fail-closed behavior is deliberate for unattended
-  embedded operation.
+- `full_green` tries the local Atmoce gateway every cycle. Local grid current is the
+  signed holding register `60090` scaled by `0.01 A`; it is used directly for control
+  and shown as **Grid (raw)**. Local storage current is `0` because the migrated map
+  does not expose a storage-current register.
+- If a local read fails, the same cycle immediately requests Atmoce Web data. The next
+  cycle tries local Modbus again, so recovery is automatic without a sticky fallback.
+- Web fallback retains `(gridPower + storagePower) / grid_voltage_v` for Full Green
+  control while its displayed raw grid value remains `gridPower / grid_voltage_v`.
+- If both local Modbus and Web fallback fail, Full Green immediately commands `0 A`.
+  This fail-closed behavior is deliberate for unattended embedded operation.
+- Full Green preserves the battery-aware feedback step and 0-1 A import dead band, and
+  holds the configured minimum-current floor for the configured period before 0 A.
+  Both offline limits are 0 A.
 - `max_power` commands the configured maximum for online and offline limits and skips
   Atmoce HTTPS requests entirely.
 - When TOU is enabled, its night window and selected weekend days override the base
@@ -141,17 +146,31 @@ and holding connector IDs.
   independent; the current configuration reads connector `1` and writes connector `0`.
 
 The control cycle uses blocking TLS and Modbus sockets inside one `asyncio` loop to keep
-RAM use low. Consequently, the dashboard can pause briefly while a network request is
-in progress. Atmoce HTTPS uses SNI but the default MicroPython TLS configuration may not
-validate server certificates on every firmware build; use a trusted LAN and current
-firmware, and treat the bearer token as a secret. Serial failures include the network
-phase, endpoint, Wi-Fi state, free heap, and exception to distinguish DNS, TCP, TLS,
-HTTP, and Modbus failures.
+RAM use low. Consequently, the dashboard can pause briefly while a local Modbus or Web
+request is in progress. Atmoce HTTPS uses SNI but the default MicroPython TLS
+configuration may not validate server certificates on every firmware build; use a
+trusted LAN and current firmware, and treat the bearer token as a secret. Serial
+failures include source, network phase, endpoint, Wi-Fi state, free heap, consecutive
+local failure count, and exception.
+
+### Atmoce Modbus register map
+
+All values are read with holding-register function `03` and big-endian word order.
+
+| Address | Type / scale | Value |
+|---|---|---|
+| `60069` | UINT32, W | PV power |
+| `60073` | INT32, W | Grid power |
+| `60089` | UINT16 x 0.1 V | Grid voltage |
+| `60090` | INT16 x 0.01 A | Signed grid current |
+| `60095` | UINT16, % | Battery SOC |
 
 ## Troubleshooting
 
 - If the Modbus connection is disconnected, the charger may need to be restarted
   before it will accept a new connection.
+- If the meter shows **Atmoce Web fallback**, verify the Atmoce gateway host, port,
+  unit ID, LAN routing, and that holding-register function `03` is enabled.
 
 ## Host-side tests
 
@@ -159,10 +178,11 @@ The pure policy, configuration, Atmoce parsing, and Modbus framing tests run wit
 hardware:
 
 ```sh
-PYTHONPYCACHEPREFIX=/tmp/autelems-pycache python3 -m unittest discover -s micropython/tests -v
+PYTHONPYCACHEPREFIX=/tmp/autel-ems-micro-pycache python3 -m unittest discover -s tests -v
 ```
 
-Hardware acceptance still requires verifying one full-green ramp, one meter-failure
+Hardware acceptance still requires comparing local readings with the desktop probe,
+verifying same-cycle Web fallback and next-cycle local recovery, one meter-failure
 fail-safe, max mode, charger reconnect, configuration persistence, and ESP32 reboot.
 
 ## Support

@@ -8,7 +8,9 @@ except ImportError:  # CPython import checks
     import time
 
 import atmoce_web
+import atmoce_modbus
 import config_store
+import meter_manager
 import modbus_tcp
 from policy import CurrentPolicy
 from web_server import WebServer
@@ -90,7 +92,7 @@ class EmsApp:
         self.wifi_label = wifi_label
         self.policy = None
         self.charger = None
-        self.meter_client = None
+        self.meter_manager = None
         self.meter = {}
         self.charger_state = {"connected": False}
         self.ev_limit = 0
@@ -99,22 +101,32 @@ class EmsApp:
         self.last_error = None
         self.station = station
         self.clock_synced = clock_synced
+        self.meter_source = "Atmoce unavailable"
         self._configure_clients()
 
     def _configure_clients(self):
         if self.charger is not None:
             self.charger.close()
+        if self.meter_manager is not None:
+            self.meter_manager.close()
         self.policy = CurrentPolicy(self.cfg)
         self.charger = modbus_tcp.ModbusTcpClient(
             self.cfg["charger_host"], self.cfg["charger_port"],
             self.cfg["charger_unit_id"])
-        self.meter_client = atmoce_web.AtmoceWebClient(
+        web_client = atmoce_web.AtmoceWebClient(
             self.cfg["atmoce_station_id"], token=self.cfg["atmoce_token"],
             username=self.cfg["atmoce_username"],
             password=self.cfg["atmoce_password"],
             session=self.cfg["atmoce_session"],
             voltage=self.cfg["grid_voltage_v"],
             password_encoded=self.cfg["atmoce_password_encoded"])
+        local_client = None
+        if self.cfg["atmoce_host"]:
+            local_client = atmoce_modbus.AtmoceModbusClient(
+                self.cfg["atmoce_host"], self.cfg["atmoce_port"],
+                self.cfg["atmoce_unit_id"])
+        self.meter_manager = meter_manager.MeterManager(local_client, web_client)
+        self.meter_source = "Atmoce unavailable"
 
     def update_config(self, incoming):
         old_ssid = self.cfg.get("wifi_ssid")
@@ -149,23 +161,42 @@ class EmsApp:
             self.meter = {}
             self.meter_ok = True
             self.ev_limit = self.policy.allowed_amps(None)
+            self.meter_source = "Atmoce bypassed"
         else:
-            # TLS handshakes need a contiguous block of heap on ESP32.
             gc.collect()
             try:
-                self.meter = self.meter_client.read()
+                self.meter = self.meter_manager.read()
+                if self.meter_manager.last_local_error is not None:
+                    _log_failure(
+                        "Atmoce Modbus consecutive_failures=%d" %
+                        self.meter_manager.failure_count,
+                        self.meter_manager.last_local_error,
+                        self.meter_manager.local.endpoint,
+                        self.meter_manager.local.last_phase, self.station)
                 self.meter_ok = True
+                self.meter_source = self.meter_manager.active_source
                 self.ev_limit = self.policy.allowed_amps(
                     self.meter["grid_amps"], self.meter["storage_amps"],
                     self.meter["battery_soc"])
-            except Exception as exc:
+            except meter_manager.MeterUnavailable as exc:
                 self.meter = {}
                 self.meter_ok = False
+                self.meter_source = "Atmoce unavailable"
                 self.ev_limit = self.policy.allowed_amps(None)
-                self.last_error = "Atmoce: " + str(exc)
-                _log_failure("Atmoce Web", exc,
+                if exc.local_error is not None:
+                    _log_failure(
+                        "Atmoce Modbus consecutive_failures=%d" %
+                        self.meter_manager.failure_count,
+                        exc.local_error, self.meter_manager.local.endpoint,
+                        self.meter_manager.local.last_phase, self.station)
+                web_error = exc.web_error or exc
+                web_service = ("Atmoce Web fallback"
+                               if self.meter_manager.local is not None
+                               else "Atmoce Web")
+                self.last_error = web_service + ": " + str(web_error)
+                _log_failure(web_service, web_error,
                              "www.atmocecloud.com:443",
-                             self.meter_client.last_phase, self.station)
+                             self.meter_manager.web.last_phase, self.station)
 
         try:
             self.charger.push_limits(
@@ -235,11 +266,15 @@ class EmsApp:
             "control_ok": self.control_ok,
             "ev_limit_amps": self.ev_limit,
             "meter": self.meter,
+            "meter_status": self.meter_manager.status(),
             "charger": charger,
             "policy": self.policy.status(),
             "last_error": self.last_error,
             "free_heap_bytes": free_heap,
         }
+        result["meter_status"]["source"] = self.meter_source
+        if self.meter_source == "Atmoce bypassed":
+            result["meter_status"]["fallback_active"] = False
         return result
 
 
@@ -260,4 +295,5 @@ def run():
     asyncio.run(_run(app))
 
 
-run()
+if __name__ == "__main__":
+    run()

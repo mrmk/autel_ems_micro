@@ -30,6 +30,17 @@ button{background:#16a269;border:0;font-weight:700;cursor:pointer}.metric{font-s
 <div><span class=muted>Charger</span><div class=metric id=sCharger>-</div></div><div><span class=muted>Free heap</span><div class=metric id=sMemory>-</div></div>
 <div><span class=muted>TOU</span><div class=metric id=sTou>-</div></div>
 </div><p id=sError class="error bad"></p></section>
+<section class=card><h2>Meter status</h2><div class=grid>
+<div><span class=muted>Source</span><div class=metric id=mSource>-</div></div>
+<div><span class=muted>Grid voltage</span><div class=metric id=mVoltage>-</div></div>
+<div><span class=muted>Grid power</span><div class=metric id=mGridPower>-</div></div>
+<div><span class=muted>PV power</span><div class=metric id=mPvPower>-</div></div>
+<div><span class=muted>Battery SOC</span><div class=metric id=mSoc>-</div></div>
+<div><span class=muted>Local failures</span><div class=metric id=mFailures>-</div></div>
+</div><div class="details muted">
+<div>Modbus endpoint: <span id=mEndpoint>-</span> &middot; Unit: <span id=mUnit>-</span></div>
+<div>Last Modbus phase: <span id=mPhase>-</span> &middot; Web fallback: <span id=mFallback>-</span></div>
+</div></section>
 <section class=card><h2>Charger status</h2><div class=grid>
 <div><span class=muted>Connection</span><div><span class=pill id=cConnection>Unknown</span></div></div>
 <div><span class=muted>State code</span><div class=metric id=cState>-</div></div>
@@ -54,6 +65,9 @@ button{background:#16a269;border:0;font-weight:700;cursor:pointer}.metric{font-s
 <label>Feedback step (A)<input name=feedback_step_amps type=number min=1 max=10></label>
 <label>6 A hold (seconds)<input name=full_green_hold_seconds type=number min=0 max=600></label>
 <label>Update interval (seconds)<input name=update_interval_s type=number min=2 max=300></label>
+<label>Atmoce Modbus host<input name=atmoce_host placeholder=192.168.1.120></label>
+<label>Atmoce Modbus port<input name=atmoce_port type=number min=1 max=65535></label>
+<label>Atmoce Modbus unit ID<input name=atmoce_unit_id type=number min=0 max=247></label>
 <label>Atmoce station ID<input name=atmoce_station_id type=number min=0></label>
 <label>Atmoce username<input name=atmoce_username autocomplete=username></label>
 <label>Atmoce password<input name=atmoce_password type=password autocomplete=current-password placeholder="Leave blank to keep saved password"></label>
@@ -71,12 +85,12 @@ button{background:#16a269;border:0;font-weight:700;cursor:pointer}.metric{font-s
 <label>Wi-Fi password<input name=wifi_password type=password placeholder="Leave blank to keep saved password"></label>
 <label>Setup AP password<input name=setup_ap_password type=password placeholder="Leave blank to keep saved password"></label>
 </div><p><button type=submit>Save configuration</button></p><div id=message></div></form>
-<p class=muted>Atmoce credentials are never returned by the API. Changing Wi-Fi settings reboots the ESP32.</p>
+<p class=muted>Local Atmoce Modbus is tried first every cycle; Atmoce Web is used immediately when the local read fails. Credentials are never returned by the API. Changing Wi-Fi settings reboots the ESP32.</p>
 <script>
 const $=s=>document.querySelector(s), form=$('#config');let loaded=false;
 const fmt=(v,n=1)=>v==null?'-':Number(v).toFixed(n);
 async function status(){try{const r=await fetch('/api/status'),s=await r.json();
-const bypass=s.policy.effective_mode==='max_power',meter=bypass?'Atmoce bypassed':(s.meter_ok?'Atmoce online':'Atmoce unavailable'),wifiOk=s.wifi.startsWith('Wi-Fi ');
+const bypass=s.policy.effective_mode==='max_power',ms=s.meter_status||{},meter=ms.source||'Atmoce unavailable',wifiOk=s.wifi.startsWith('Wi-Fi ');
 $('#sWifi').textContent=s.wifi;$('#sWifi').className='pill '+(wifiOk?'good':'bad');
 $('#sMeter').textContent=meter;$('#sMeter').className='pill '+(bypass?'muted':(s.meter_ok?'good':'bad'));
 $('#sControl').textContent=s.control_ok?'Controller OK':'Controller error';$('#sControl').className='pill '+(s.control_ok?'good':'bad');
@@ -84,6 +98,11 @@ $('#sMode').textContent=s.policy.effective_mode+(s.policy.tou.active_now?' (TOU)
 $('#sBattery').textContent=fmt(s.meter.storage_amps)+' A / '+fmt(s.meter.battery_soc,0)+'%';
 $('#sCharger').textContent=s.charger.connected?(fmt(s.charger.current_amps)+' A'):'offline';$('#sMemory').textContent=(s.free_heap_bytes||0)+' B';
 $('#sTou').textContent=s.policy.tou.enabled?(s.policy.tou.active_now?'active':(s.policy.tou.local_time||'clock invalid')):'disabled';
+$('#mSource').textContent=meter;
+$('#mVoltage').textContent=fmt(s.meter.grid_voltage_v,1)+' V';$('#mGridPower').textContent=fmt(s.meter.grid_raw_power_w,0)+' W';
+$('#mPvPower').textContent=fmt(s.meter.pv_power_w,0)+' W';$('#mSoc').textContent=fmt(s.meter.battery_soc,0)+'%';
+$('#mFailures').textContent=ms.consecutive_failures||0;$('#mEndpoint').textContent=ms.endpoint||'Web only';
+$('#mUnit').textContent=ms.unit_id==null?'-':ms.unit_id;$('#mPhase').textContent=ms.modbus_phase||'-';$('#mFallback').textContent=ms.fallback_active?'active':'standby';
 const c=s.charger,online=!!c.connected;$('#cConnection').textContent=online?'Connected':'Offline';$('#cConnection').className='pill '+(online?'good':'bad');
 $('#cState').textContent=online?(c.state??'-'):'-';$('#cVoltage').textContent=online?fmt(c.voltage_v,1)+' V':'-';
 $('#cCurrent').textContent=online?fmt(c.current_amps,2)+' A':'-';$('#cPower').textContent=online?fmt(c.power_w,0)+' W':'-';
@@ -93,7 +112,7 @@ $('#cPhase').textContent=c.modbus_phase||'-';$('#cUpdated').textContent=new Date
 $('#sError').textContent=s.last_error||''}catch(e){$('#sWifi').textContent='ESP32 unavailable';$('#sWifi').className='pill bad';$('#sMeter').textContent='Meter unknown';$('#sMeter').className='pill muted';$('#sControl').textContent='Controller unknown';$('#sControl').className='pill muted'}}
 async function load(){const c=await (await fetch('/api/config')).json();for(const [k,v] of Object.entries(c)){const e=form.elements[k];if(e&&v!=null){if(e.type==='checkbox')e.checked=!!v;else e.value=v}}loaded=true}
 form.addEventListener('submit',async e=>{e.preventDefault();const out={};for(const [k,v] of new FormData(form)){out[k]=v}
-for(const k of ['charger_port','charger_unit_id','read_connector_id','holding_connector_id','charger_min_amps','charger_max_amps','feedback_step_amps','full_green_hold_seconds','update_interval_s','atmoce_station_id','tou_utc_offset_minutes'])out[k]=parseInt(out[k],10);
+for(const k of ['charger_port','charger_unit_id','read_connector_id','holding_connector_id','charger_min_amps','charger_max_amps','feedback_step_amps','full_green_hold_seconds','update_interval_s','atmoce_port','atmoce_unit_id','atmoce_station_id','tou_utc_offset_minutes'])out[k]=parseInt(out[k],10);
 for(const k of ['tou_enabled','tou_weekend_saturday','tou_weekend_sunday','atmoce_password_encoded'])out[k]=form.elements[k].checked;
 out.grid_voltage_v=parseFloat(out.grid_voltage_v);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(out)});const b=await r.json();
 $('#message').textContent=b.ok?(b.rebooting?'Saved; ESP32 is rebooting...':'Saved'):(b.error||'Save failed');if(b.ok&&!b.rebooting)load()});
