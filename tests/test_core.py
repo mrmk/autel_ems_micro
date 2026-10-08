@@ -86,7 +86,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(current.allowed_amps(-1, 0, 50), 6)
         self.assertEqual(current.allowed_amps(-1, 0, 50), 7)
 
-    def test_full_green_uses_battery_discharge_step(self):
+    def test_full_green_uses_battery_charging_step(self):
         current = policy.CurrentPolicy(sample_config(full_green_hold_seconds=0))
         current.feedback_ev = 10
         self.assertEqual(current.allowed_amps(0, -4, 50), 14)
@@ -202,7 +202,76 @@ class FakeSocket:
         pass
 
 
+class FailingConnectSocket:
+    def __init__(self):
+        self.closed = False
+
+    def settimeout(self, value):
+        pass
+
+    def connect(self, address):
+        raise OSError("connect failed")
+
+    def close(self):
+        self.closed = True
+
+
 class ModbusTests(unittest.TestCase):
+    def test_failed_connect_closes_temporary_socket(self):
+        failed = FailingConnectSocket()
+        original_socket = modbus_tcp.socket.socket
+        original_getaddrinfo = modbus_tcp.socket.getaddrinfo
+        modbus_tcp.socket.socket = lambda: failed
+        modbus_tcp.socket.getaddrinfo = lambda *args: [
+            (None, None, None, None, ("192.0.2.10", 502))]
+        try:
+            client = modbus_tcp.ModbusTcpClient("192.0.2.10")
+            with self.assertRaises(OSError):
+                client._connect()
+        finally:
+            modbus_tcp.socket.socket = original_socket
+            modbus_tcp.socket.getaddrinfo = original_getaddrinfo
+        self.assertTrue(failed.closed)
+        self.assertIsNone(client.sock)
+
+    def test_transport_failure_retries_on_fresh_connection(self):
+        pdu = bytes((3, 2)) + struct.pack(">H", 9)
+        frame = struct.pack(">HHHB", 2, 0, len(pdu) + 1, 1) + pdu
+        stale = FakeSocket(b"")
+        fresh = FakeSocket(frame)
+        client = modbus_tcp.ModbusTcpClient("unused", unit_id=1)
+        client.sock = stale
+        client._connect = lambda: (
+            setattr(client, "sock", fresh) if client.sock is None else None)
+        self.assertEqual(client.read_holding_registers(10, 1), [9])
+        self.assertEqual(client.transaction, 2)
+        self.assertTrue(fresh.sent)
+
+    def test_initial_connect_failure_is_not_retried(self):
+        client = modbus_tcp.ModbusTcpClient("unused", unit_id=1)
+        attempts = []
+
+        def fail_connect():
+            attempts.append(1)
+            client.last_phase = "tcp-connect"
+            raise OSError("timed out")
+
+        client._connect = fail_connect
+        with self.assertRaises(OSError):
+            client.read_holding_registers(10, 1)
+        self.assertEqual(len(attempts), 1)
+
+    def test_connection_is_renewed_after_request_limit(self):
+        pdu = bytes((3, 2)) + struct.pack(">H", 9)
+        frame = struct.pack(">HHHB", 1, 0, len(pdu) + 1, 1) + pdu
+        client = modbus_tcp.ModbusTcpClient(
+            "unused", unit_id=1, max_requests_per_connection=1)
+        client.sock = FakeSocket(frame)
+        client.last_limits = (1, 2, 3, 4)
+        self.assertEqual(client.read_holding_registers(10, 1), [9])
+        self.assertIsNone(client.sock)
+        self.assertIsNone(client.last_limits)
+
     def test_read_holding_register_frame_and_decode(self):
         pdu = bytes((3, 4)) + struct.pack(">HH", 0xFFFE, 2)
         frame = struct.pack(">HHHB", 1, 0, len(pdu) + 1, 1) + pdu
@@ -272,19 +341,19 @@ class AtmoceModbusTests(unittest.TestCase):
         reader = atmoce_modbus.AtmoceModbusClient("192.0.2.20")
         reader.client = FakeRegisterClient({
             60069: (0, 2300),
-            60071: (0, 1150),
+            60071: (0xFFFF, 0xFB82),
             60073: (0xFFFF, 0xFC18),
             60089: 2315,
-            60090: 0xFF9C,
             60095: 73,
         })
         result = reader.read()
         self.assertEqual(result["source"], "Atmoce Modbus")
         self.assertEqual(result["pv_power_w"], 2300)
-        self.assertEqual(result["grid_power_w"], -1000)
+        self.assertEqual(result["grid_raw_power_w"], -1000)
+        self.assertEqual(result["grid_power_w"], -2150)
         self.assertAlmostEqual(result["grid_voltage_v"], 231.5)
-        self.assertAlmostEqual(result["grid_amps"], -1.0)
-        self.assertEqual(result["grid_raw_amps"], result["grid_amps"])
+        self.assertAlmostEqual(result["grid_raw_amps"], -1000 / 231.5)
+        self.assertAlmostEqual(result["grid_amps"], -2150 / 231.5)
         self.assertEqual(result["storage_power_w"], -1150)
         self.assertAlmostEqual(result["storage_amps"], -1150 / 231.5)
         self.assertEqual(result["battery_soc"], 73)
@@ -296,12 +365,13 @@ class AtmoceModbusTests(unittest.TestCase):
             60071: (0xFFFF, 0xFC18),
             60073: (0, 0),
             60089: 0,
-            60090: 0,
             60095: 0,
         })
         result = reader.read()
-        self.assertEqual(result["storage_power_w"], 1000)
+        self.assertEqual(result["storage_power_w"], -1000)
         self.assertEqual(result["storage_amps"], 0)
+        self.assertEqual(result["grid_raw_amps"], 0)
+        self.assertEqual(result["grid_amps"], 0)
 
 
 class SequenceClient:
@@ -378,6 +448,11 @@ class FakeCharger:
         self.last_limits = None
 
 
+class StatusFailingCharger(FakeCharger):
+    def read_status(self, connector):
+        raise OSError("status unavailable")
+
+
 class NeverReadManager:
     def read(self):
         raise AssertionError("meter must be bypassed")
@@ -390,6 +465,15 @@ class NeverReadManager:
 
 
 class AppFallbackTests(unittest.TestCase):
+    def test_charger_status_failure_marks_controller_unhealthy(self):
+        app = main.EmsApp(sample_config(policy_mode="max_power"), "Wi-Fi test")
+        app.charger = StatusFailingCharger()
+        app.meter_manager = NeverReadManager()
+        app._cycle()
+        self.assertFalse(app.control_ok)
+        self.assertFalse(app.charger_state["connected"])
+        self.assertIn("Charger status", app.last_error)
+
     def test_modbus_failure_uses_web_then_local_recovers(self):
         cfg = sample_config(
             policy_mode="full_green", full_green_hold_seconds=0,

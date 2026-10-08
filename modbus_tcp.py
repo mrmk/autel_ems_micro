@@ -13,6 +13,10 @@ class ModbusError(OSError):
     pass
 
 
+class ModbusProtocolError(ModbusError):
+    """A valid TCP response that must not be retried as a transport failure."""
+
+
 def _uint32_words(value):
     value = int(value) & 0xFFFFFFFF
     return ((value >> 16) & 0xFFFF, value & 0xFFFF)
@@ -35,12 +39,15 @@ def int32(words):
 
 
 class ModbusTcpClient:
-    def __init__(self, host, port=502, unit_id=1, timeout=5):
+    def __init__(self, host, port=502, unit_id=1, timeout=5,
+                 max_requests_per_connection=0):
         self.host = host
         self.port = int(port)
         self.unit_id = int(unit_id)
         self.timeout = timeout
+        self.max_requests_per_connection = int(max_requests_per_connection)
         self.sock = None
+        self.connection_requests = 0
         self.transaction = 0
         self.last_limits = None
         self.last_phase = "idle"
@@ -52,6 +59,7 @@ class ModbusTcpClient:
             except OSError:
                 pass
         self.sock = None
+        self.connection_requests = 0
         # A reconnect must re-assert the limits even if their values did not change.
         self.last_limits = None
 
@@ -61,10 +69,20 @@ class ModbusTcpClient:
         self.last_phase = "dns"
         address = socket.getaddrinfo(self.host, self.port, 0, socket.SOCK_STREAM)[0][-1]
         sock = socket.socket()
-        sock.settimeout(self.timeout)
-        self.last_phase = "tcp-connect"
-        sock.connect(address)
+        try:
+            sock.settimeout(self.timeout)
+            self.last_phase = "tcp-connect"
+            sock.connect(address)
+        except Exception:
+            # self.sock is not assigned until connect succeeds, so close the
+            # temporary socket here rather than relying on close().
+            try:
+                sock.close()
+            except OSError:
+                pass
+            raise
         self.sock = sock
+        self.connection_requests = 0
 
     def _recv_exact(self, length):
         chunks = bytearray()
@@ -76,33 +94,55 @@ class ModbusTcpClient:
         return bytes(chunks)
 
     def _request(self, function, payload):
-        self.transaction = (self.transaction + 1) & 0xFFFF
         pdu = bytes((function,)) + payload
-        frame = struct.pack(">HHHB", self.transaction, 0, len(pdu) + 1, self.unit_id) + pdu
-        try:
-            self._connect()
-            self.last_phase = "modbus-send-function-%d" % function
-            self.sock.sendall(frame)
-            self.last_phase = "modbus-read-header-function-%d" % function
-            header = self._recv_exact(7)
-            transaction, protocol, length, unit = struct.unpack(">HHHB", header)
-            if transaction != self.transaction or protocol != 0 or unit != self.unit_id:
-                raise ModbusError("invalid Modbus response header")
-            if length < 2 or length > 260:
-                raise ModbusError("invalid Modbus response length")
-            self.last_phase = "modbus-read-body-function-%d" % function
-            response = self._recv_exact(length - 1)
-            if not response:
-                raise ModbusError("empty Modbus response")
-            if response[0] == (function | 0x80):
-                raise ModbusError("Modbus exception %d" % response[1])
-            if response[0] != function:
-                raise ModbusError("unexpected Modbus function")
-            self.last_phase = "complete"
-            return response[1:]
-        except Exception:
-            self.close()
-            raise
+        for attempt in range(2):
+            self.transaction = (self.transaction + 1) & 0xFFFF
+            frame = struct.pack(">HHHB", self.transaction, 0,
+                                len(pdu) + 1, self.unit_id) + pdu
+            try:
+                self._connect()
+                self.last_phase = "modbus-send-function-%d" % function
+                self.sock.sendall(frame)
+                self.last_phase = "modbus-read-header-function-%d" % function
+                header = self._recv_exact(7)
+                transaction, protocol, length, unit = struct.unpack(
+                    ">HHHB", header)
+                if (transaction != self.transaction or protocol != 0 or
+                        unit != self.unit_id):
+                    raise ModbusProtocolError("invalid Modbus response header")
+                if length < 2 or length > 260:
+                    raise ModbusProtocolError("invalid Modbus response length")
+                self.last_phase = "modbus-read-body-function-%d" % function
+                response = self._recv_exact(length - 1)
+                if not response:
+                    raise ModbusProtocolError("empty Modbus response")
+                if response[0] == (function | 0x80):
+                    raise ModbusProtocolError(
+                        "Modbus exception %d" % response[1])
+                if response[0] != function:
+                    raise ModbusProtocolError("unexpected Modbus function")
+                self.connection_requests += 1
+                self.last_phase = "complete"
+                result = response[1:]
+                if (self.max_requests_per_connection > 0 and
+                        self.connection_requests >=
+                        self.max_requests_per_connection):
+                    self.close()
+                return result
+            except ModbusProtocolError:
+                self.close()
+                raise
+            except OSError:
+                failed_phase = self.last_phase
+                self.close()
+                # Retry a dropped established session on a fresh connection.
+                # A DNS/connect failure has no stale session to replace and an
+                # immediate second attempt only blocks the shared event loop.
+                if attempt or failed_phase in ("dns", "tcp-connect"):
+                    raise
+            except Exception:
+                self.close()
+                raise
 
     def write_register(self, address, value):
         payload = struct.pack(">HH", int(address), int(value) & 0xFFFF)

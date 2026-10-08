@@ -112,7 +112,14 @@ class EmsApp:
         self.policy = CurrentPolicy(self.cfg)
         self.charger = modbus_tcp.ModbusTcpClient(
             self.cfg["charger_host"], self.cfg["charger_port"],
-            self.cfg["charger_unit_id"])
+            self.cfg["charger_unit_id"],
+            # A LAN charger should answer quickly. Keep failures short because
+            # blocking sockets share the dashboard's asyncio event loop.
+            timeout=1,
+            # Renew a stable connection roughly once per minute. This avoids
+            # reusing a half-closed session after the charger's idle timeout.
+            max_requests_per_connection=max(
+                1, 60 // self.cfg["update_interval_s"]))
         web_client = atmoce_web.AtmoceWebClient(
             self.cfg["atmoce_station_id"], token=self.cfg["atmoce_token"],
             username=self.cfg["atmoce_username"],
@@ -209,16 +216,16 @@ class EmsApp:
             self.charger_state = self.charger.read_status(
                 self.cfg["read_connector_id"])
             self.charger_state["connected"] = True
+            self.control_ok = True
         except Exception as exc:
             self.charger_state = {"connected": False}
+            self.control_ok = False
             if self.last_error is None:
                 self.last_error = "Charger status: " + str(exc)
             _log_failure("charger Modbus status", exc,
                          "%s:%d" % (self.cfg["charger_host"],
                                     self.cfg["charger_port"]),
                          self.charger.last_phase, self.station)
-        self.control_ok = True
-
         tou = self.policy.tou.snapshot()
         if tou["enabled"] and not tou["clock_valid"] and self.last_error is None:
             self.last_error = "TOU clock is not synchronized"

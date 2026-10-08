@@ -120,15 +120,14 @@ current, power, commanded limit, endpoint, unit ID, and the independent connecto
 
 ## Control behavior
 
-- `full_green` tries the local Atmoce gateway every cycle. Local grid current is the
-  signed holding register `60090` scaled by `0.01 A`; it is used directly for control
-  and shown as **Grid (raw)**. Local storage current is derived from signed storage
-  power register `60071` and measured grid voltage. Its sign is normalized to match
-  the Web path: negative means battery discharge and positive means charging.
+- `full_green` tries the local Atmoce gateway every cycle. To match Atmoce Web,
+  **Grid (raw)** current is derived from signed grid power register `60073` divided by
+  measured grid voltage. Storage current is likewise derived from signed storage power
+  register `60071`. Negative storage means charging and positive means discharging.
+- Both sources use `(gridPower + storagePower) / grid_voltage_v` for Full Green control.
 - If a local read fails, the same cycle immediately requests Atmoce Web data. The next
   cycle tries local Modbus again, so recovery is automatic without a sticky fallback.
-- Web fallback retains `(gridPower + storagePower) / grid_voltage_v` for Full Green
-  control while its displayed raw grid value remains `gridPower / grid_voltage_v`.
+- Both sources display raw grid current as `gridPower / grid_voltage_v`.
 - If both local Modbus and Web fallback fail, Full Green immediately commands `0 A`.
   This fail-closed behavior is deliberate for unattended embedded operation.
 - Full Green preserves the battery-aware feedback step and 0-1 A import dead band, and
@@ -148,7 +147,9 @@ current, power, commanded limit, endpoint, unit ID, and the independent connecto
 
 The control cycle uses blocking TLS and Modbus sockets inside one `asyncio` loop to keep
 RAM use low. Consequently, the dashboard can pause briefly while a local Modbus or Web
-request is in progress. Atmoce HTTPS uses SNI but the default MicroPython TLS
+request is in progress. Charger connection failures are limited to a one-second timeout,
+and dashboard polling reports the ESP as busy if a response takes over four seconds.
+Atmoce HTTPS uses SNI but the default MicroPython TLS
 configuration may not validate server certificates on every firmware build; use a
 trusted LAN and current firmware, and treat the bearer token as a secret. Serial
 failures include source, network phase, endpoint, Wi-Fi state, free heap, consecutive
@@ -164,13 +165,17 @@ All values are read with holding-register function `03` and big-endian word orde
 | `60071` | INT32, W | Battery charge/discharge power; converted to amps using grid voltage |
 | `60073` | INT32, W | Grid power |
 | `60089` | UINT16 x 0.1 V | Grid voltage |
-| `60090` | INT16 x 0.01 A | Signed grid current |
 | `60095` | UINT16, % | Battery SOC |
+
+Register `60090` is not used for **Grid (raw)** because live readings do not represent
+the same active-power-derived current exposed by Atmoce Web.
 
 ## Troubleshooting
 
 - If the Modbus connection is disconnected, the charger may need to be restarted
-  before it will accept a new connection.
+  before it will accept a new connection. The client retries one transport failure
+  on a fresh socket and renews healthy charger sessions about once per minute, but it
+  cannot recover while the charger's TCP port is actively refusing connections.
 - If the meter shows **Atmoce Web fallback**, verify the Atmoce gateway host, port,
   unit ID, LAN routing, and that holding-register function `03` is enabled.
 

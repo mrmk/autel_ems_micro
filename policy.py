@@ -69,6 +69,7 @@ class CurrentPolicy:
         return value
 
     def allowed_amps(self, grid_amps, storage_amps=0, battery_soc=0):
+        """Calculate the EV limit; negative storage current means charging."""
         if self.effective_max():
             return self.maximum
         if grid_amps is None:

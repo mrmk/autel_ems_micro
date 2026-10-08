@@ -87,9 +87,9 @@ button{background:#16a269;border:0;font-weight:700;cursor:pointer}.metric{font-s
 </div><p><button type=submit>Save configuration</button></p><div id=message></div></form>
 <p class=muted>Local Atmoce Modbus is tried first every cycle; Atmoce Web is used immediately when the local read fails. Credentials are never returned by the API. Changing Wi-Fi settings reboots the ESP32.</p>
 <script>
-const $=s=>document.querySelector(s), form=$('#config');let loaded=false;
+const $=s=>document.querySelector(s), form=$('#config');let loaded=false,statusTimer;
 const fmt=(v,n=1)=>v==null?'-':Number(v).toFixed(n);
-async function status(){try{const r=await fetch('/api/status'),s=await r.json();
+async function status(){const controller=new AbortController(),abort=setTimeout(()=>controller.abort(),4000);try{const r=await fetch('/api/status',{signal:controller.signal}),s=await r.json();
 const bypass=s.policy.effective_mode==='max_power',ms=s.meter_status||{},meter=ms.source||'Atmoce unavailable',wifiOk=s.wifi.startsWith('Wi-Fi ');
 $('#sWifi').textContent=s.wifi;$('#sWifi').className='pill '+(wifiOk?'good':'bad');
 $('#sMeter').textContent=meter;$('#sMeter').className='pill '+(bypass?'muted':(s.meter_ok?'good':'bad'));
@@ -109,14 +109,14 @@ $('#cCurrent').textContent=online?fmt(c.current_amps,2)+' A':'-';$('#cPower').te
 $('#cLimit').textContent=s.ev_limit_amps+' A '+(c.limits_written?'sent':'pending');$('#cEndpoint').textContent=c.endpoint||'-';
 $('#cUnit').textContent=c.unit_id??'-';$('#cRead').textContent=c.read_connector_id??'-';$('#cHolding').textContent=c.holding_connector_id??'-';
 $('#cPhase').textContent=c.modbus_phase||'-';$('#cUpdated').textContent=new Date().toLocaleTimeString();
-$('#sError').textContent=s.last_error||''}catch(e){$('#sWifi').textContent='ESP32 unavailable';$('#sWifi').className='pill bad';$('#sMeter').textContent='Meter unknown';$('#sMeter').className='pill muted';$('#sControl').textContent='Controller unknown';$('#sControl').className='pill muted'}}
+$('#sError').textContent=s.last_error||''}catch(e){$('#sWifi').textContent='ESP32 busy or unavailable';$('#sWifi').className='pill bad';$('#sMeter').textContent='Meter unknown';$('#sMeter').className='pill muted';$('#sControl').textContent='Controller unknown';$('#sControl').className='pill muted'}finally{clearTimeout(abort);clearTimeout(statusTimer);statusTimer=setTimeout(status,5000)}}
 async function load(){const c=await (await fetch('/api/config')).json();for(const [k,v] of Object.entries(c)){const e=form.elements[k];if(e&&v!=null){if(e.type==='checkbox')e.checked=!!v;else e.value=v}}loaded=true}
 form.addEventListener('submit',async e=>{e.preventDefault();const out={};for(const [k,v] of new FormData(form)){out[k]=v}
 for(const k of ['charger_port','charger_unit_id','read_connector_id','holding_connector_id','charger_min_amps','charger_max_amps','feedback_step_amps','full_green_hold_seconds','update_interval_s','atmoce_port','atmoce_unit_id','atmoce_station_id','tou_utc_offset_minutes'])out[k]=parseInt(out[k],10);
 for(const k of ['tou_enabled','tou_weekend_saturday','tou_weekend_sunday','atmoce_password_encoded'])out[k]=form.elements[k].checked;
 out.grid_voltage_v=parseFloat(out.grid_voltage_v);const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(out)});const b=await r.json();
 $('#message').textContent=b.ok?(b.rebooting?'Saved; ESP32 is rebooting...':'Saved'):(b.error||'Save failed');if(b.ok&&!b.rebooting)load()});
-load().catch(()=>{});status();setInterval(status,5000);
+load().catch(()=>{});status();
 </script></main></body></html>"""
 
 
