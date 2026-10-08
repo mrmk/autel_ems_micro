@@ -39,15 +39,12 @@ def int32(words):
 
 
 class ModbusTcpClient:
-    def __init__(self, host, port=502, unit_id=1, timeout=5,
-                 max_requests_per_connection=0):
+    def __init__(self, host, port=502, unit_id=1, timeout=5):
         self.host = host
         self.port = int(port)
         self.unit_id = int(unit_id)
         self.timeout = timeout
-        self.max_requests_per_connection = int(max_requests_per_connection)
         self.sock = None
-        self.connection_requests = 0
         self.transaction = 0
         self.last_limits = None
         self.last_phase = "idle"
@@ -59,7 +56,6 @@ class ModbusTcpClient:
             except OSError:
                 pass
         self.sock = None
-        self.connection_requests = 0
         # A reconnect must re-assert the limits even if their values did not change.
         self.last_limits = None
 
@@ -82,7 +78,6 @@ class ModbusTcpClient:
                 pass
             raise
         self.sock = sock
-        self.connection_requests = 0
 
     def _recv_exact(self, length):
         chunks = bytearray()
@@ -121,14 +116,8 @@ class ModbusTcpClient:
                         "Modbus exception %d" % response[1])
                 if response[0] != function:
                     raise ModbusProtocolError("unexpected Modbus function")
-                self.connection_requests += 1
                 self.last_phase = "complete"
-                result = response[1:]
-                if (self.max_requests_per_connection > 0 and
-                        self.connection_requests >=
-                        self.max_requests_per_connection):
-                    self.close()
-                return result
+                return response[1:]
             except ModbusProtocolError:
                 self.close()
                 raise

@@ -43,7 +43,7 @@ button{background:#16a269;border:0;font-weight:700;cursor:pointer}.metric{font-s
 </div></section>
 <section class=card><h2>Charger status</h2><div class=grid>
 <div><span class=muted>Connection</span><div><span class=pill id=cConnection>Unknown</span></div></div>
-<div><span class=muted>State code</span><div class=metric id=cState>-</div></div>
+<div><span class=muted>Charger State</span><div class=metric id=cState>-</div></div>
 <div><span class=muted>Voltage</span><div class=metric id=cVoltage>-</div></div>
 <div><span class=muted>Current</span><div class=metric id=cCurrent>-</div></div>
 <div><span class=muted>Power</span><div class=metric id=cPower>-</div></div>
@@ -89,6 +89,8 @@ button{background:#16a269;border:0;font-weight:700;cursor:pointer}.metric{font-s
 <script>
 const $=s=>document.querySelector(s), form=$('#config');let loaded=false,statusTimer;
 const fmt=(v,n=1)=>v==null?'-':Number(v).toFixed(n);
+const chargerStates={0:'Available',1:'Preparing (RFID)',2:'Preparing (EV ready)',3:'Charging',4:'Suspended by EV',5:'Suspended by charger',6:'Finishing',7:'Reserved',8:'Unavailable',9:'Firmware update',10:'Faulted',11:'Connector unavailable'};
+const chargerState=c=>c.state_text||(c.state in chargerStates?chargerStates[c.state]:(c.state==null?'Unknown':'Unknown ('+c.state+')'));
 async function status(){const controller=new AbortController(),abort=setTimeout(()=>controller.abort(),4000);try{const r=await fetch('/api/status',{signal:controller.signal}),s=await r.json();
 const bypass=s.policy.effective_mode==='max_power',ms=s.meter_status||{},meter=ms.source||'Atmoce unavailable',wifiOk=s.wifi.startsWith('Wi-Fi ');
 $('#sWifi').textContent=s.wifi;$('#sWifi').className='pill '+(wifiOk?'good':'bad');
@@ -104,7 +106,7 @@ $('#mPvPower').textContent=fmt(s.meter.pv_power_w,0)+' W';$('#mSoc').textContent
 $('#mFailures').textContent=ms.consecutive_failures||0;$('#mEndpoint').textContent=ms.endpoint||'Web only';
 $('#mUnit').textContent=ms.unit_id==null?'-':ms.unit_id;$('#mPhase').textContent=ms.modbus_phase||'-';$('#mFallback').textContent=ms.fallback_active?'active':'standby';
 const c=s.charger,online=!!c.connected;$('#cConnection').textContent=online?'Connected':'Offline';$('#cConnection').className='pill '+(online?'good':'bad');
-$('#cState').textContent=online?(c.state??'-'):'-';$('#cVoltage').textContent=online?fmt(c.voltage_v,1)+' V':'-';
+$('#cState').textContent=online?chargerState(c):'Offline';$('#cVoltage').textContent=online?fmt(c.voltage_v,1)+' V':'-';
 $('#cCurrent').textContent=online?fmt(c.current_amps,2)+' A':'-';$('#cPower').textContent=online?fmt(c.power_w,0)+' W':'-';
 $('#cLimit').textContent=s.ev_limit_amps+' A '+(c.limits_written?'sent':'pending');$('#cEndpoint').textContent=c.endpoint||'-';
 $('#cUnit').textContent=c.unit_id??'-';$('#cRead').textContent=c.read_connector_id??'-';$('#cHolding').textContent=c.holding_connector_id??'-';

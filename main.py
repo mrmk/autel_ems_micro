@@ -16,6 +16,30 @@ from policy import CurrentPolicy
 from web_server import WebServer
 
 
+CHARGER_STATE_TEXT = {
+    0: "Available",
+    1: "Preparing (RFID)",
+    2: "Preparing (EV ready)",
+    3: "Charging",
+    4: "Suspended by EV",
+    5: "Suspended by charger",
+    6: "Finishing",
+    7: "Reserved",
+    8: "Unavailable",
+    9: "Firmware update",
+    10: "Faulted",
+    11: "Connector unavailable",
+}
+
+
+def charger_state_text(value):
+    try:
+        code = int(value)
+    except (TypeError, ValueError):
+        return "Unknown"
+    return CHARGER_STATE_TEXT.get(code, "Unknown (%d)" % code)
+
+
 def _log_failure(service, exc, endpoint="", phase="", station=None):
     free_heap = gc.mem_free() if hasattr(gc, "mem_free") else 0
     connected = bool(station is not None and station.isconnected())
@@ -115,11 +139,7 @@ class EmsApp:
             self.cfg["charger_unit_id"],
             # A LAN charger should answer quickly. Keep failures short because
             # blocking sockets share the dashboard's asyncio event loop.
-            timeout=1,
-            # Renew a stable connection roughly once per minute. This avoids
-            # reusing a half-closed session after the charger's idle timeout.
-            max_requests_per_connection=max(
-                1, 60 // self.cfg["update_interval_s"]))
+            timeout=5)
         web_client = atmoce_web.AtmoceWebClient(
             self.cfg["atmoce_station_id"], token=self.cfg["atmoce_token"],
             username=self.cfg["atmoce_username"],
@@ -267,6 +287,7 @@ class EmsApp:
             "modbus_phase": self.charger.last_phase,
             "limits_written": self.charger.last_limits is not None,
         })
+        charger["state_text"] = charger_state_text(charger.get("state"))
         result = {
             "wifi": self.wifi_label,
             "meter_ok": self.meter_ok,

@@ -147,7 +147,7 @@ current, power, commanded limit, endpoint, unit ID, and the independent connecto
 
 The control cycle uses blocking TLS and Modbus sockets inside one `asyncio` loop to keep
 RAM use low. Consequently, the dashboard can pause briefly while a local Modbus or Web
-request is in progress. Charger connection failures are limited to a one-second timeout,
+request is in progress. Charger connection failures use a five-second timeout,
 and dashboard polling reports the ESP as busy if a response takes over four seconds.
 Atmoce HTTPS uses SNI but the default MicroPython TLS
 configuration may not validate server certificates on every firmware build; use a
@@ -174,8 +174,9 @@ the same active-power-derived current exposed by Atmoce Web.
 
 - If the Modbus connection is disconnected, the charger may need to be restarted
   before it will accept a new connection. The client retries one transport failure
-  on a fresh socket and renews healthy charger sessions about once per minute, but it
-  cannot recover while the charger's TCP port is actively refusing connections.
+  on a fresh socket, but it keeps healthy sessions open because some charger firmware
+  reacts poorly to proactive disconnects. It cannot recover while the charger's TCP
+  port is actively refusing connections.
 - If the meter shows **Atmoce Web fallback**, verify the Atmoce gateway host, port,
   unit ID, LAN routing, and that holding-register function `03` is enabled.
 

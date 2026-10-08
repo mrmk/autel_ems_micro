@@ -69,6 +69,17 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(public["atmoce_password_set"])
 
 
+class ChargerStateTests(unittest.TestCase):
+    def test_known_states_are_human_readable(self):
+        self.assertEqual(main.charger_state_text(0), "Available")
+        self.assertEqual(main.charger_state_text(3), "Charging")
+        self.assertEqual(main.charger_state_text(10), "Faulted")
+
+    def test_unknown_state_preserves_numeric_code(self):
+        self.assertEqual(main.charger_state_text(42), "Unknown (42)")
+        self.assertEqual(main.charger_state_text(None), "Unknown")
+
+
 class PolicyTests(unittest.TestCase):
     def test_max_power_does_not_need_meter(self):
         current = policy.CurrentPolicy(sample_config(policy_mode="max_power", charger_max_amps=24))
@@ -260,17 +271,6 @@ class ModbusTests(unittest.TestCase):
         with self.assertRaises(OSError):
             client.read_holding_registers(10, 1)
         self.assertEqual(len(attempts), 1)
-
-    def test_connection_is_renewed_after_request_limit(self):
-        pdu = bytes((3, 2)) + struct.pack(">H", 9)
-        frame = struct.pack(">HHHB", 1, 0, len(pdu) + 1, 1) + pdu
-        client = modbus_tcp.ModbusTcpClient(
-            "unused", unit_id=1, max_requests_per_connection=1)
-        client.sock = FakeSocket(frame)
-        client.last_limits = (1, 2, 3, 4)
-        self.assertEqual(client.read_holding_registers(10, 1), [9])
-        self.assertIsNone(client.sock)
-        self.assertIsNone(client.last_limits)
 
     def test_read_holding_register_frame_and_decode(self):
         pdu = bytes((3, 4)) + struct.pack(">HH", 0xFFFE, 2)
