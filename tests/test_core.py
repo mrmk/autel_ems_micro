@@ -272,6 +272,7 @@ class AtmoceModbusTests(unittest.TestCase):
         reader = atmoce_modbus.AtmoceModbusClient("192.0.2.20")
         reader.client = FakeRegisterClient({
             60069: (0, 2300),
+            60071: (0, 1150),
             60073: (0xFFFF, 0xFC18),
             60089: 2315,
             60090: 0xFF9C,
@@ -284,8 +285,23 @@ class AtmoceModbusTests(unittest.TestCase):
         self.assertAlmostEqual(result["grid_voltage_v"], 231.5)
         self.assertAlmostEqual(result["grid_amps"], -1.0)
         self.assertEqual(result["grid_raw_amps"], result["grid_amps"])
-        self.assertEqual(result["storage_amps"], 0)
+        self.assertEqual(result["storage_power_w"], -1150)
+        self.assertAlmostEqual(result["storage_amps"], -1150 / 231.5)
         self.assertEqual(result["battery_soc"], 73)
+
+    def test_zero_grid_voltage_does_not_divide_by_zero(self):
+        reader = atmoce_modbus.AtmoceModbusClient("192.0.2.20")
+        reader.client = FakeRegisterClient({
+            60069: (0, 0),
+            60071: (0xFFFF, 0xFC18),
+            60073: (0, 0),
+            60089: 0,
+            60090: 0,
+            60095: 0,
+        })
+        result = reader.read()
+        self.assertEqual(result["storage_power_w"], 1000)
+        self.assertEqual(result["storage_amps"], 0)
 
 
 class SequenceClient:

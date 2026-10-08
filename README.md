@@ -122,8 +122,9 @@ current, power, commanded limit, endpoint, unit ID, and the independent connecto
 
 - `full_green` tries the local Atmoce gateway every cycle. Local grid current is the
   signed holding register `60090` scaled by `0.01 A`; it is used directly for control
-  and shown as **Grid (raw)**. Local storage current is `0` because the migrated map
-  does not expose a storage-current register.
+  and shown as **Grid (raw)**. Local storage current is derived from signed storage
+  power register `60071` and measured grid voltage. Its sign is normalized to match
+  the Web path: negative means battery discharge and positive means charging.
 - If a local read fails, the same cycle immediately requests Atmoce Web data. The next
   cycle tries local Modbus again, so recovery is automatic without a sticky fallback.
 - Web fallback retains `(gridPower + storagePower) / grid_voltage_v` for Full Green
@@ -160,6 +161,7 @@ All values are read with holding-register function `03` and big-endian word orde
 | Address | Type / scale | Value |
 |---|---|---|
 | `60069` | UINT32, W | PV power |
+| `60071` | INT32, W | Battery charge/discharge power; converted to amps using grid voltage |
 | `60073` | INT32, W | Grid power |
 | `60089` | UINT16 x 0.1 V | Grid voltage |
 | `60090` | INT16 x 0.01 A | Signed grid current |
